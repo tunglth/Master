@@ -1,0 +1,488 @@
+---
+title: "Time Series Assignment"
+author: "Thanh-Tung LUONG"
+date: "2024-04-15"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE, message = FALSE)
+```
+```{r}
+rm(list=ls())
+```
+
+```{r}
+library(dplyr)
+library(psych)
+library(ggplot2)
+library(urca)
+library(zoo)
+library(exuber)
+library(FinTS)
+library(conflicted)
+library(rugarch)
+library(MSGARCH)
+library(forecast)
+library(rmgarch)
+library(BEKKs)
+library(moments)
+```
+
+--------------------------------------------------------------------------------
+
+# ANALYSIS OF BTC's TIME SERIES
+
+## Create variables and general statistical description
+
+```{r}
+btc <- read.csv("bitcoin-daily-2017.csv", header = TRUE, stringsAsFactors = TRUE)
+btc$date <- as.Date(btc$date, format = "%Y-%m-%d")
+
+#btc$Price <- na.approx(btc$Price)
+
+btc <- btc %>%
+  mutate(logPrice = log(Price))
+
+btc <- btc %>%
+  mutate(logReturn = c(NA,diff(logPrice))*100)
+btc$logReturn[1] <- 1
+
+btc$demean_ret = (btc$logReturn-mean(btc$logReturn))^2
+print(btc)
+```
+
+```{r}
+btc_stats <- describe(btc)
+print(btc_stats)
+```
+
+
+## BTC's log price analysis
+
+### Plot of the series and its ACF and PACF
+
+```{r}
+ggplot(data = btc, aes(x = seq_along(logPrice), y = logPrice)) +
+  geom_line() + 
+  labs(x="Day", y="Log Price", title="Log Bitcoin Price Plot")
+```
+The Time Series of log price of Bitcoin seems like a trend stationary process. We now carry out some tests to see the features of this time series.
+
+```{r}
+acf(x = btc$logPrice,lag.max =20,main="Autocorrelogram of log price of Bitcoin")
+pacf(x = btc$logPrice,lag.max = 20,main="Partial Autocorrelogram of log price of Bitcoin")
+```
+As we can observe, the ACF is persistent over time (close to 1 and slightly decreasing), while the PACF is only significant at lag 1 and become insignificant from the second lag. We can conclude that this time series has characteristics of a difference stationary process.
+
+### Unit Root Tests
+
+#### ADF Test with deterministic trend and an intercept
+
+```{r}
+tt_drift_adf<-ur.df(y = btc$logPrice,type=c("trend"), lag=20, selectlags = c('AIC'))
+summary(tt_drift_adf)
+```
+
+#### ADF Test with intercept, no trend
+
+```{r}
+drift_adf<-ur.df(y = btc$logPrice,type=c("drift"), lag=20, selectlags = c('AIC'))
+summary(drift_adf)
+```
+
+#### ADF Test no intercept, no trend
+
+```{r}
+none_adf<-ur.df(y = btc$logPrice,type=c("none"), lag=20, selectlags = c('AIC'))
+summary(none_adf)
+```
+From three tests above, the t-stats are all higher than 10% DF critical values. Thus, we cannot reject the null hypothesis (H0: not stationary). We come to the conclusion that log price of Bitcoin is not a second-order stationary process.
+
+#### KPSS stationarity test around a deterministic trend
+
+```{r}
+kpss_tau<-ur.kpss(y=btc$logPrice,type="tau",lags="short")
+summary(kpss_tau)
+```
+
+#### KPSS stationarity test around an intercept
+
+```{r}
+kpss_tau<-ur.kpss(y=btc$logPrice,type="mu",lags="short")
+summary(kpss_tau)
+```
+The KPSS tests suggest that we reject the Null hypothesis (H0: the series is stationary) at 1 percent significance level, i.e: the series is not stationary.
+
+
+#### Ljung-Box test for no autocorrelation
+
+```{r}
+LB=Box.test(btc$logPrice,lag=20,type="Ljung")
+sprintf("Q-stat of the Ljung-box test: %.4f", LB$statistic)
+```
+Since the Q-stat is large than $\chi^{2}_{90%}(20)$ (8.55), we reject the null hypothesis of the Ljung-Box test (H0: no correlation until rank 20) at 1 percent significance level.
+
+
+## BTC's log return analysis
+
+### Plot of the series and its ACF and PACF 
+
+```{r}
+ggplot(data = btc, aes(x = seq_along(logReturn), y = logReturn)) +
+  geom_line() + 
+  labs(x="Day", y="Log Return", title="Bitcoin's Log Returns Plot")
+```
+```{r}
+acf(x = btc$logReturn,lag.max=20,main="Bitcoin's log return autocorrelogram")
+pacf(x = btc$logReturn,main="Bitcoin's log return partial autocorrelogram")
+```
+For autocorrelation, only the first lag is significant. For partial autocorrelation, we can see that it is only significant at the 10th lags.
+
+Again, let's carry out the unit root test to see the feature of this series.
+
+### Unit Root Tests
+
+#### ADF Test with deterministic trend and an intercept
+
+```{r}
+tt_drift_adf<-ur.df(y = btc$logReturn,type=c("trend"), lag=20, selectlags = c('AIC'))
+summary(tt_drift_adf)
+```
+
+#### ADF Test with intercept, no trend
+
+```{r}
+drift_adf<-ur.df(y = btc$logReturn,type=c("drift"), lag=20, selectlags = c('AIC'))
+summary(drift_adf)
+```
+
+#### ADF Test no intercept, no trend
+
+```{r}
+none_adf<-ur.df(y = btc$logReturn,type=c("none"), lag=20, selectlags = c('AIC'))
+summary(none_adf)
+```
+
+As observed through all conducted tests, the t-stats are all lower than critical values for 1% significance level. Thus, we reject the null hypothesis of the ADF unit root test, i.e: there is stationarity in the series.
+
+#### KPSS stationarity test around a deterministic trend
+
+```{r}
+kpss_tau<-ur.kpss(y=btc$logReturn,type="tau",lags="short")
+summary(kpss_tau)
+```
+
+#### KPSS stationarity test around an intercept
+
+```{r}
+kpss_tau<-ur.kpss(y=btc$logReturn,type="mu",lags="short")
+summary(kpss_tau)
+```
+The KPSS tests suggest that we cannot reject the Null hypothesis (H0: the series is stationary), since the p-values are all smaller than 10 percent significance level.
+
+
+#### Ljung-Box test for no autocorrelation
+
+```{r}
+LB=Box.test(btc$logReturn,lag=20,type="Ljung")
+sprintf("Q-stat of the Ljung-box test: %.4f", LB$statistic)
+```
+Since the Q-stat is large than $\chi^{2}_{90%}(20)$ (8.55), we reject the null hypothesis of the Ljung-Box test (H0: no correlation until rank 20) at 1 percent significance level.
+
+
+## Test For Bubbles
+
+Since there is no dividend for Bitcoin, we are going to test the speculative bubble for the log price series of Bitcoin 
+
+```{r}
+adf2<-ur.df(y = btc$logPrice,type=c("drift"), lag=12, selectlags = c('AIC'))
+summary(adf2)
+```
+
+The number of lag here should be 2, according to AIC.
+
+```{r}
+psy_minw(btc$logPrice) # recommended window for the initial forward recursive estimation 
+sprintf("The recommended window for the initial forward recursive estimation is  %f",psy_minw(btc$logPrice))
+radf_btc <-radf(btc$logPrice,lag=2) # radf uses psy_minw(x) by default
+sprintf("The SADF test statistics is equal to %f",radf_btc$sadf)
+```
+```{r}
+radf_crit$n119$sadf_cv
+```
+The SupADF statistics $SADF = 1.93$ is higher than the three critical values. We reject the null hypothesis of a unit root in favor of an explosive behavior at 1% significance level, i.e there is an evidence of a bubble. We can check again with simulated critical values. 
+
+```{r}
+x<-btc$logPrice
+mc_critical_values <- radf_mc_cv(n=length(x), nrep=1000,seed = 123)
+summary(radf_btc,mc_critical_values)
+```
+
+We use this simulated critical value for the unit root test:
+```{r}
+diagnostics(radf_btc,mc_critical_values,option = "sadf")
+```
+
+And for the bubble detection:
+```{r}
+bubble_date<-datestamp(radf_btc,cv=mc_critical_values,min_duration = psy_ds(x),option = "sadf")
+bubble_date
+```
+
+```{r}
+autoplot_x_sadf<-autoplot(radf_btc,option="sadf",cv=mc_critical_values,min_duration = psy_ds(x))+labs(title="Dates of the speculative bubble - sadf test")
+autoplot_x_sadf
+```
+
+## Modeling of the returns and the conditional variances
+
+### GARCH Models
+
+```{r}
+plot(btc$date, btc$logReturn,type='l',col='blue',xlab = "",ylab = "",xaxt="n",main = "BTC's log returns")
+axis.Date(1,at=seq(gold_df$date[1],tail(btc$date,1),by="3 months"),format = "%d/%m/%y",las=2)
+```
+```{r}
+plot(btc$date, btc$demean_ret,type='l',col='blue',xlab = "",ylab = "",xaxt="n",main = "BTC's demeaned returns")
+axis.Date(1,at=seq(btc$date[1],tail(btc$date,1),by="3 months"),format = "%d/%m/%y",las=2)
+```
+```{R}
+acf(x = btc$demean_ret,lag.max =20,main="Autocorrelogram BTC squared demeaned log return")
+```
+```{r}
+ArchTest(btc$logReturn,lags = 2,demean=TRUE)
+```
+
+pvalue is close to 0 => we reject the null of no ARCH effect
+
+#### ARIMA(1,0,1)+GARCH(1,1) without variance targeting and a Gaussian distribution
+
+```{r}
+args(ugarchspec)
+spec = ugarchspec()
+fit_btcret=ugarchfit(spec = spec,data = btc$logReturn,solver = "hybrid")
+show(fit_btcret)
+plot(fit_btcret, which="all")
+```
+```{r}
+plot(btc$date,fit_btcret@fit$var,type="l",col="blue",main="Conditional Variance of BTC's log return",xlab="",ylab="")
+
+# conditional standard deviation estimated from the model
+plot(btc$date,fit_btcret@fit$sigma,type="l",col="blue",main="Conditional S.D of Gold's log return",xlab="",ylab="")
+```
+
+#### AR(1) + GARCH(1,1) + Gaussian distribution
+
+```{r}
+spec_AR1_garch11= ugarchspec(mean.model = list(armaOrder=c(1,0)))
+show(spec_AR1_garch11)
+fit_AR1_garch11=ugarchfit(spec = spec_AR1_garch11,data = btc$logReturn,solver = "hybrid")
+show(fit_AR1_garch11)
+plot(btc$date,fit_AR1_garch11@fit$sigma,type="l",col="blue",main="Conditional S.D of BTC's log return",xlab="",ylab="")
+```
+
+#### Exponential GARCH + Normal
+
+```{r}
+spec_egarch_Mnorm = ugarchspec(mean.model=list(armaOrder=c(1,0),archm=TRUE,archpow=1),variance.model = list(model="sGARCH"),distribution.model = "norm")
+show(spec_egarch_Mnorm)
+fit_egarch_Mnorm = ugarchfit(spec = spec_egarch_Mnorm,data = btc$logReturn,solver = "hybrid")
+show(fit_egarch_Mnorm)
+```
+
+#### GJR model+ AR1 + Gaussian distribution
+```{r}
+spec_AR1_GJR_norm = ugarchspec(variance.model = list(model="gjrGARCH"),distribution.model = "norm",mean.model = list(armaOrder=c(1,0)))
+show(spec_AR1_GJR_norm)
+
+fit_AR1_GJR_norm=ugarchfit(spec = spec_AR1_GJR_norm,data = btc$logReturn,solver = "hybrid")
+show(fit_AR1_GJR_norm)
+```
+
+```{r}
+plot(btc$date,fit_AR1_GJR_norm@fit$sigma,type="l",col="blue",main="Conditional S.D of BTC's log return - GJR",xlab="",ylab="")
+matplot(x = btc$date, cbind(fit_AR1_garch11@fit$sigma,fit_AR1_GJR_norm@fit$sigma),lty=1,
+        type = "l",col=c('red',"blue"),xlab="time",ylab = "sigma",main="Conditional S.D of BTC's log return with and without an asymmetry effect")
+
+legend("topleft",legend=c("garch11","gjr11"),col=c('red',"blue"),lty=1)
+```
+
+#### Exponential GARCH model + Gaussian distribution
+```{r}
+spec_egarch = ugarchspec(mean.model=list(armaOrder=c(1,0)),variance.model = list(model="eGARCH"))
+show(spec_egarch)
+
+fit_egarch = ugarchfit(spec = spec_egarch,data = btc$logReturn,solver = "hybrid")
+show(fit_egarch)
+plot(fit_egarch@fit$sigma,type="l",col="blue",main="Conditional Standard Deviation of BTC's log return - eGarch",xlab="",ylab="")
+
+matplot(x = btc$date, cbind(fit_AR1_garch11@fit$sigma,fit_AR1_GJR_norm@fit$sigma,fit_egarch@fit$sigma),lty=1,
+        type = "l",col=c('red',"blue","green"),xlab="time",ylab = "sigma",main="Conditional Standard deviation with and without an asymmetry effect")
+
+legend("topleft",legend=c("garch11","gjr11","egarch11"),col=c('red',"blue","green"),lty=1)
+
+```
+gamma1 (coefficient of the asymmetric effect) is significant, suggesting evidence of an asymmetric effect of negative shocks on return.
+
+#### GARCH(1,1) with a Student distribution for the standardized residuals
+
+```{r}
+spec_AR1_St = ugarchspec(mean.model = list(armaOrder=c(1,0)),distribution.model="std")
+show(spec_AR1_St)
+
+fit_AR1_St=ugarchfit(spec = spec_AR1_St,data = btc$logReturn,solver = "hybrid")
+show(fit_AR1_St)
+
+plot(btc$date,fit_AR1_St@fit$var,type="l",col="blue",main="Conditional Standard Deviation of BTC's log return",xlab="",ylab="")
+```
+
+The information criteria are lower than with a Gaussian distribution, an evidence in favor of the Student distribution
+
+#### AR(1) + GARCH(1,1) + GED distribution
+
+```{r}
+spec_AR1_ged = ugarchspec(mean.model = list(armaOrder=c(1,0)),distribution.model="ged")
+show(spec_AR1_ged)
+
+fit_AR1_ged=ugarchfit(spec = spec_AR1_ged,data = btc$logReturn,solver = "hybrid")
+show(fit_AR1_ged)
+
+plot(btc$date,fit_AR1_ged@fit$var,type="l",col="blue",main="Conditional Standard Deviation of BTC's log return",xlab="",ylab="")
+```
+
+#### AR(1) + GARCH(1,1) + Skewed-Student distribution
+
+```{r}
+spec_AR1_sSt = ugarchspec(mean.model = list(armaOrder=c(1,0)),distribution.model="sstd")
+show(spec_AR1_sSt)
+
+fit_AR1_sSt=ugarchfit(spec = spec_AR1_sSt,data = btc$logReturn,solver = "hybrid")
+show(fit_AR1_sSt)
+
+plot(btc$date,fit_AR1_sSt@fit$var,type="l",col="blue",main="Conditional Standard Deviation of BTC's log return",xlab="",ylab="")
+```
+
+#### AR(1) + GARCH(1,1) + skewed GED distribution
+
+```{r}
+spec_AR1_sged = ugarchspec(mean.model = list(armaOrder=c(1,0)),distribution.model="sged")
+show(spec_AR1_sged)
+
+fit_AR1_sged=ugarchfit(spec = spec_AR1_sged,data = btc$logReturn,solver = "hybrid")
+show(fit_AR1_sged)
+
+plot(btc$date,fit_AR1_sged@fit$var,type="l",col="blue",main="Conditional Standard Deviation of BTC's log return",xlab="",ylab="")
+```
+
+The information criteria are lower than with a Gaussian distribution, evidence in favor of the skewed-GED distribution
+
+#### GJR model+ AR1 + skew-student distribution
+```{r}
+spec_AR1_GJR_sstd = ugarchspec(variance.model = list(model="gjrGARCH"),distribution.model = "sstd",mean.model = list(armaOrder=c(1,0)))
+show(spec_AR1_GJR_sstd)
+
+fit_AR1_GJR_sstd=ugarchfit(spec = spec_AR1_GJR_sstd,data = btc$logReturn,solver = "hybrid")
+show(fit_AR1_GJR_sstd)
+
+plot(btc$date,fit_AR1_GJR_sstd@fit$sigma,type="l",col="blue",main="Conditional Standard Deviation of BTC's log return - GJR",xlab="",ylab="")
+```
+
+#### GJR model+ AR1 + skew-ged distribution
+```{r}
+spec_AR1_GJR_sged = ugarchspec(variance.model = list(model="gjrGARCH"),distribution.model = "sged",mean.model = list(armaOrder=c(1,0)))
+show(spec_AR1_GJR_sged)
+
+fit_AR1_GJR_sged=ugarchfit(spec = spec_AR1_GJR_sged,data = btc$logReturn,solver = "hybrid")
+show(fit_AR1_GJR_sged)
+
+plot(btc$date,fit_AR1_GJR_sged@fit$sigma,type="l",col="blue",main="Conditional Standard Deviation of BTC's log return - GJR",xlab="",ylab="")
+```
+
+#### Exponential GARCH model + Skew Student
+```{r}
+specegarchsstd = ugarchspec(mean.model=list(armaOrder=c(1,0)),variance.model = list(model="eGARCH"),distribution.model = "sstd")
+show(specegarchsstd)
+
+fitegarchsstd=ugarchfit(spec = specegarchsstd,data = btc$logReturn,solver = "hybrid")
+show(fitegarchsstd)
+plot(fitegarchsstd@fit$sigma,type="l",col="blue",main="Conditional Standard Deviation of BTC's log return GJR",xlab="",ylab="")
+```
+
+#### exponential GARCH model + Skew Student + ARCH-in-mean
+
+GARCH in Mean introduces a trade-off between risk and return.
+
+```{r}
+spec_egarchM_sstd = ugarchspec(mean.model=list(armaOrder=c(1,0),archm=TRUE,archpow=1),variance.model = list(model="eGARCH"),distribution.model = "sstd")
+show(spec_egarchM_sstd)
+fit_egarchM_sstd=ugarchfit(spec = spec_egarchM_sstd,data = btc$logReturn,solver = "hybrid")
+show(fit_egarchM_sstd)
+```
+
+
+### Markov switching GARCH
+
+```{r}
+MS_spec<-CreateSpec()
+print(MS_spec)
+
+#Estimation of an AR1 model
+AR1<-Arima(y = btc$logReturn,order=c(1,0,0))
+
+#Estimation of the MS-GARCH
+MS_Garch_Fit<-FitML(MS_spec,data=AR1$residuals)
+
+# We display the estimation results
+summary(MS_Garch_Fit)
+
+ExtractStateFit(MS_Garch_Fit)
+```
+
+```{r}
+# Estimation of the unconditional volatity level for each state
+sapply(ExtractStateFit(MS_Garch_Fit),UncVol)
+
+#Display of transition matrix
+TransMat(MS_Garch_Fit)
+
+#Computation and plot of conditional probability
+P<-State(object = MS_Garch_Fit)
+```
+
+#### Specification with asymmetric effect
+
+```{r}
+specgjr<-CreateSpec(variance.spec = list(model=c("gjrGARCH","gjrGARCH")),distribution.spec = list(distribution=c("norm","norm")))
+print(specgjr)
+MS_Garchgjr_Fit<-FitML(specgjr,data=AR1$residuals)
+summary(MS_Garchgjr_Fit)
+```
+No significant asymmetric effect for state 2
+
+```{r}
+specgjr<-CreateSpec(variance.spec = list(model=c("gjrGARCH","sGARCH")),distribution.spec = list(distribution=c("norm","norm")))
+print(specgjr)
+MS_Garchgjr_Fit<-FitML(specgjr,data=AR1$residuals)
+summary(MS_Garchgjr_Fit)
+```
+
+
+#### Specification with non gaussian distributions skewed student
+
+```{r}
+specgjr_ssd<-CreateSpec(variance.spec = list(model=c("gjrGARCH","sGARCH")),distribution.spec = list(distribution=c("sstd","sstd")),constraint.spec=list(regime.const=c("nu","xi")))
+MS_Garchgjr_Fit_ssd<-FitML(specgjr_ssd,data=AR1$residuals)
+summary(MS_Garchgjr_Fit_ssd)
+```
+
+
+
+
+
+
+
+
+
+
+
+
